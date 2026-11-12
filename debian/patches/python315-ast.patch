@@ -1,0 +1,153 @@
+Description: Construct complete AST nodes for Python 3.15
+Origin: upstream, https://github.com/edgewall/genshi/commit/3c26106076a546a7efab0ea88b824490a021f2d2
+Bug: https://github.com/edgewall/genshi/pull/102
+Forwarded: not-needed, already merged upstream
+Comment: Omit unrelated whitespace-only edits from the upstream commit.
+
+--- a/genshi/compat.py
++++ b/genshi/compat.py
+@@ -202,7 +202,6 @@
+         if hasattr(code, "co_exceptiontable"):
+             # https://bugs.python.org/issue40222
+             params.append(code.co_exceptiontable)
+-        params.extend([(), ()])
+         return tuple(params)
+ 
+ 
+@@ -223,6 +222,15 @@
+                         filename, name, lineno, code.co_lnotab, (), ())
+ 
+ 
++# PyPy 2.7 checks the number of arguments to ast.Call
++
++if IS_PYTHON2:
++    # PyPy2.7 requires the args and kwargs arguments
++    required_ast_call_args = ((), {})
++else:
++    required_ast_call_args = ()
++
++
+ # In Python 3.8, Str and Ellipsis was replaced by Constant
+ 
+ with warnings.catch_warnings():
+--- a/genshi/template/astutil.py
++++ b/genshi/template/astutil.py
+@@ -802,13 +802,14 @@
+         return visitor(node)
+ 
+     def _clone(self, node):
+-        clone = node.__class__()
+-        for name in getattr(clone, '_attributes', ()):
++        cls = node.__class__
++        kw = {}
++        for name in getattr(cls, '_attributes', ()):
+             try:
+-                setattr(clone, name, getattr(node, name))
++                kw[name] = getattr(node, name)
+             except AttributeError:
+                 pass
+-        for name in clone._fields:
++        for name in cls._fields:
+             try:
+                 value = getattr(node, name)
+             except AttributeError:
+@@ -822,8 +823,8 @@
+                     value = tuple(self.visit(x) for x in value)
+                 else: 
+                     value = self.visit(value)
+-                setattr(clone, name, value)
+-        return clone
++                kw[name] = value
++        return cls(**kw)
+ 
+     visit_Module = _clone
+     visit_Interactive = _clone
+--- a/genshi/template/eval.py
++++ b/genshi/template/eval.py
+@@ -23,11 +23,13 @@
+ from genshi.util import flatten
+ 
+ from genshi.compat import ast as _ast, _ast_Constant, get_code_params, \
+-                          build_code_chunk, isstring, IS_PYTHON2, _ast_Str
++                          build_code_chunk, isstring, IS_PYTHON2, \
++                          required_ast_call_args, _ast_Str
+ 
+ __all__ = ['Code', 'Expression', 'Suite', 'LenientLookup', 'StrictLookup',
+            'Undefined', 'UndefinedError']
+ __docformat__ = 'restructuredtext en'
++
+ 
+ 
+ 
+@@ -59,11 +61,9 @@
+                 'Expected string or AST node, but got %r' % source
+             self.source = '?'
+             if self.mode == 'eval':
+-                node = _ast.Expression()
+-                node.body = source
++                node = _ast.Expression(body=source)
+             else:
+-                node = _ast.Module()
+-                node.body = [source]
++                node = _ast.Module(body=[source])
+ 
+         self.ast = node
+         self.code = _compile(node, self.source, mode=self.mode,
+@@ -453,15 +453,11 @@
+         return code
+ 
+ 
+-def _new(class_, *args, **kwargs):
+-    ret = class_()
+-    for attr, value in zip(ret._fields, args):
++def _new(cls, *args, **kwargs):
++    for attr, value in zip(cls._fields, args):
+         if attr in kwargs:
+             raise ValueError('Field set both in args and kwargs')
+-        setattr(ret, attr, value)
+-    for attr, value in kwargs:
+-        setattr(ret, attr, value)
+-    return ret
++    return cls(*args, **kwargs)
+ 
+ 
+ BUILTINS = builtins.__dict__.copy()
+@@ -552,9 +548,13 @@
+         for generator in node.generators:
+             # comprehension = (expr target, expr iter, expr* ifs)
+             self.locals.append(set())
++            gen_kw = {}
++            if "is_async" in _ast.comprehension._fields:
++                gen_kw["is_async"] = False
+             gen = _new(_ast.comprehension, self.visit(generator.target),
+                        self.visit(generator.iter),
+-                       [self.visit(if_) for if_ in generator.ifs])
++                       [self.visit(if_) for if_ in generator.ifs],
++                       **gen_kw)
+             gens.append(gen)
+ 
+         # use node.__class__ to make it reusable as ListComp
+@@ -587,7 +587,7 @@
+             name = _new(_ast.Name, '_lookup_name', _ast.Load())
+             namearg = _new(_ast.Name, '__data__', _ast.Load())
+             strarg = _new(_ast_Str, node.id)
+-            node = _new(_ast.Call, name, [namearg, strarg], [])
++            node = _new(_ast.Call, name, [namearg, strarg], [], *required_ast_call_args)
+         elif isinstance(node.ctx, _ast.Store):
+             if len(self.locals) > 1:
+                 self.locals[-1].add(node.id)
+@@ -606,7 +606,7 @@
+ 
+         func = _new(_ast.Name, '_lookup_attr', _ast.Load())
+         args = [self.visit(node.value), _new(_ast_Str, node.attr)]
+-        return _new(_ast.Call, func, args, [])
++        return _new(_ast.Call, func, args, [], *required_ast_call_args)
+ 
+     def visit_Subscript(self, node):
+         if not isinstance(node.ctx, _ast.Load) or \
+@@ -626,4 +626,4 @@
+             self.visit(node.value),
+             _new(_ast.Tuple, (self.visit(slice_value),), _ast.Load())
+         ]
+-        return _new(_ast.Call, func, args, [])
++        return _new(_ast.Call, func, args, [], *required_ast_call_args)
