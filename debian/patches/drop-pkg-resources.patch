@@ -1,0 +1,142 @@
+From: Colin Watson <cjwatson@debian.org>
+Date: Mon, 9 Feb 2026 01:25:09 +0000
+Subject: Port from pkg_resources to importlib.resources
+
+`pkg_resources` is deprecated (see
+https://setuptools.pypa.io/en/latest/pkg_resources.html).
+
+Forwarded: https://github.com/edgewall/genshi/pull/97
+Bug-Debian: https://bugs.debian.org/1083413
+Last-Update: 2026-02-09
+---
+ .github/workflows/tests.yml |  4 ++--
+ doc/loader.rst              |  4 ++--
+ genshi/template/loader.py   | 12 ++++++++++--
+ genshi/template/plugin.py   |  9 +++++++--
+ setup.cfg                   |  2 ++
+ tox.ini                     |  2 +-
+ 6 files changed, 24 insertions(+), 9 deletions(-)
+
+diff --git a/.github/workflows/tests.yml b/.github/workflows/tests.yml
+index 2ab751c..acce6cd 100644
+--- a/.github/workflows/tests.yml
++++ b/.github/workflows/tests.yml
+@@ -10,14 +10,14 @@ jobs:
+     strategy:
+       matrix:
+         python-version: [3.7, 3.8, 3.9, "3.10", "3.11", "3.12", "pypy3.9"]
+-        pytest-extra-options: ["--strict-config -W \"ignore:pkg_resources is deprecated\""]
++        pytest-extra-options: ["--strict-config"]
+         include:
+           - python-version: "pypy2.7"
+             pytest-extra-options: ""
+           - python-version: "pypy3.11"
+             pytest-extra-options: ""
+           - python-version: "3.13.0-beta.2"
+-            pytest-extra-options: "--strict-config -W \"ignore:pkg_resources is deprecated\" -W ignore::DeprecationWarning"
++            pytest-extra-options: "--strict-config -W ignore::DeprecationWarning"
+       fail-fast: false
+ 
+     steps:
+diff --git a/doc/loader.rst b/doc/loader.rst
+index 4884d70..70c0d25 100644
+--- a/doc/loader.rst
++++ b/doc/loader.rst
+@@ -154,8 +154,8 @@ That is the same as:
+ ``package(name, path)``
+ -----------------------
+ 
+-Uses the ``pkg_resources`` API to locate files in Python package data (which
+-may be inside a ZIP archive).
++Uses the ``importlib.resources`` API to locate files in Python package data
++(which may be inside a ZIP archive).
+ 
+ .. code-block:: python
+ 
+diff --git a/genshi/template/loader.py b/genshi/template/loader.py
+index 43542db..f9af4c4 100644
+--- a/genshi/template/loader.py
++++ b/genshi/template/loader.py
+@@ -13,6 +13,10 @@
+ 
+ """Template loading and caching."""
+ 
++try:
++    import importlib.resources as importlib_resources
++except ImportError:
++    import importlib_resources
+ import os
+ try:
+     import threading
+@@ -300,10 +304,14 @@ class TemplateLoader(object):
+         :return: the loader function to load templates from the given package
+         :rtype: ``function``
+         """
+-        from pkg_resources import resource_stream
+         def _load_from_package(filename):
+             filepath = os.path.join(path, filename)
+-            return filepath, filename, resource_stream(name, filepath), None
++            return (
++                filepath,
++                filename,
++                importlib_resources.open_binary(name, filepath),
++                None,
++            )
+         return _load_from_package
+ 
+     @staticmethod
+diff --git a/genshi/template/plugin.py b/genshi/template/plugin.py
+index 886d7c7..6e6635b 100644
+--- a/genshi/template/plugin.py
++++ b/genshi/template/plugin.py
+@@ -16,6 +16,11 @@
+ CherryPy/Buffet.
+ """
+ 
++try:
++    import importlib.resources as importlib_resources
++except ImportError:
++    import importlib_resources
++
+ from genshi.compat import string_types
+ from genshi.input import ET, HTML, XML
+ from genshi.output import DocType
+@@ -91,10 +96,10 @@ class AbstractTemplateEnginePlugin(object):
+         if self.use_package_naming:
+             divider = templatename.rfind('.')
+             if divider >= 0:
+-                from pkg_resources import resource_filename
+                 package = templatename[:divider]
+                 basename = templatename[divider + 1:] + self.extension
+-                templatename = resource_filename(package, basename)
++                with importlib_resources.path(package, basename) as path:
++                    return self.loader.load(path)
+ 
+         return self.loader.load(templatename)
+ 
+diff --git a/setup.cfg b/setup.cfg
+index 0f765bc..75cae6e 100644
+--- a/setup.cfg
++++ b/setup.cfg
+@@ -43,6 +43,8 @@ packages =
+     genshi.template.tests.templates
+ setup_requires =
+     setuptools
++install_requires =
++    importlib-resources; python_version<"3.7"
+ 
+ [options.entry_points]
+ babel.extractors =
+diff --git a/tox.ini b/tox.ini
+index d25b3c9..c35bb69 100644
+--- a/tox.ini
++++ b/tox.ini
+@@ -2,7 +2,7 @@
+ envlist = py27,py36,py37,py38,py39,py310,py311,py312,pypy,pypy3
+ [testenv]
+ deps=
+-    setuptools
++    .
+     pytest
+ setenv=
+     PYTHONHASHSEED=0

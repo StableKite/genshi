@@ -1,0 +1,14 @@
+#!/usr/bin/make -f
+# -*- mode: makefile; coding: utf-8 -*-
+
+export DEB_BUILD_MAINT_OPTIONS=hardening=+bindnow
+
+export PYBUILD_NAME=genshi
+#export PYBUILD_VERBOSE=1
+
+%:
+	dh $@ --buildsystem=pybuild
+
+execute_after_dh_clean:
+	rm -f genshi/_speedups.so
+	rm -fr Genshi.egg-info/

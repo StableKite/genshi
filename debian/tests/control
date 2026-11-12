@@ -1,0 +1,7 @@
+Tests:
+ unittests,
+Depends:
+ python3-all,
+ python3-genshi,
+Restrictions:
+ allow-stderr,
